@@ -73,11 +73,71 @@ function extractJson(text) {
   }
 }
 
+function parseOrNull(text) {
+  try {
+    return extractJson(text);
+  } catch {
+    return null;
+  }
+}
+
+function salvage(raw, articles, wanted) {
+  const text = String(raw || '').trim();
+  if (!text) return { ok: false };
+
+  try {
+    const parsed = extractJson(text);
+    if (parsed && parsed.body_markdown) return { ok: true, value: parsed };
+  } catch {
+    /* not JSON, fall through to prose salvage */
+  }
+
+  const looksLikeProse = text.length > 250 && !text.startsWith('{');
+  if (!looksLikeProse) return { ok: false };
+
+  const lines = text.split('\n').map((line) => line.trim()).filter(Boolean);
+  const headingIndex = lines.findIndex((line) => /^#{1,3}\s/.test(line));
+
+  const candidate = headingIndex > 0 ? lines[headingIndex - 1] : lines[0];
+  const usable = candidate && !/^#{1,3}\s/.test(candidate) && candidate.length <= 100;
+
+  const headline = usable
+    ? candidate.replace(/[.,;:]\s*$/, '')
+    : `Crime on the streets of ${wanted.location}`;
+
+  const body = headingIndex >= 0 ? lines.slice(headingIndex).join('\n\n') : text;
+
+  return {
+    ok: true,
+    value: {
+      title: headline.slice(0, 140),
+      dek: '',
+      body_markdown: body,
+      tags: [wanted.location, wanted.tone.split(',')[0].trim()].filter(Boolean).slice(0, 4),
+    },
+  };
+}
+
 function countWords(markdown) {
   return String(markdown || '')
     .replace(/[#>*_`\-[\]()]/g, ' ')
     .split(/\s+/)
     .filter(Boolean).length;
+}
+
+async function callModel(url, body) {
+  return fetchJson(url, {
+    method: 'POST',
+    timeout: 120000,
+    service: 'OpenRouter',
+    headers: {
+      Authorization: `Bearer ${config.openrouter.apiKey}`,
+      'Content-Type': 'application/json',
+      'HTTP-Referer': config.openrouter.siteUrl,
+      'X-Title': config.openrouter.siteName,
+    },
+    body: JSON.stringify(body),
+  });
 }
 
 export async function generateStory({
@@ -96,7 +156,7 @@ export async function generateStory({
   }
 
   const url = `${config.openrouter.baseUrl}/chat/completions`;
-  const body = {
+  const request = {
     model: config.openrouter.model,
     temperature: clamp(
       length === 'short' ? config.openrouter.temperature + 0.1 : config.openrouter.temperature,
@@ -106,29 +166,55 @@ export async function generateStory({
     max_tokens: length === 'long' ? 3600 : 2200,
     messages: [
       { role: 'system', content: SYSTEM_PROMPT },
-      { role: 'user', content: buildUserPrompt({ location, category, articles: picked, tone, length }) },
+      {
+        role: 'user',
+        content: buildUserPrompt({
+          location,
+          category,
+          articles: picked,
+          tone,
+          length,
+        }),
+      },
     ],
   };
 
-  const response = await fetchJson(url, {
-    method: 'POST',
-    timeout: 120000,
-    service: 'OpenRouter',
-    headers: {
-      Authorization: `Bearer ${config.openrouter.apiKey}`,
-      'Content-Type': 'application/json',
-      'HTTP-Referer': config.openrouter.siteUrl,
-      'X-Title': config.openrouter.siteName,
-    },
-    body: JSON.stringify(body),
-  });
+  let response = await callModel(url, request);
+  let raw = response?.choices?.[0]?.message?.content;
 
-  const raw = response?.choices?.[0]?.message?.content;
-  if (!raw) throw new HttpError(502, 'The model returned no story content');
+  const wanted = { length, tone, location };
+  const salvaged = salvage(raw, picked, wanted);
 
-  const parsed = extractJson(raw);
-  if (!parsed.title || !parsed.body_markdown) {
-    throw new HttpError(502, 'The model returned an incomplete story');
+  if (!salvaged.ok) {
+    response = await callModel(url, {
+      ...request,
+      temperature: clamp(request.temperature - 0.3, 0, 1.5),
+      messages: [
+        ...request.messages,
+        {
+          role: 'assistant',
+          content: String(raw || '').slice(0, 800),
+        },
+        {
+          role: 'user',
+          content:
+            'That reply was not valid JSON. Reply with ONE JSON object and nothing else. ' +
+            'No markdown fences, no commentary. Keys: title (string), dek (string), ' +
+            'body_markdown (string, the full narrative in markdown), tags (array of strings).',
+        },
+      ],
+    });
+    raw = response?.choices?.[0]?.message?.content;
+  }
+
+  const parsed = salvaged.ok ? salvaged.value : parseOrNull(raw);
+
+  if (!parsed || !parsed.title || !parsed.body_markdown) {
+    throw new HttpError(
+      502,
+      `The model (${config.openrouter.model}) did not return a usable story. ` +
+        'Try a shorter length, or set OPENROUTER_MODEL to a stronger model.',
+    );
   }
 
   const body_markdown = String(parsed.body_markdown);
@@ -138,7 +224,9 @@ export async function generateStory({
     title: String(parsed.title).slice(0, 140),
     dek: String(parsed.dek || '').slice(0, 400),
     body_markdown,
-    tags: Array.isArray(parsed.tags) ? parsed.tags.map((t) => String(t).slice(0, 32)).slice(0, 8) : [],
+    tags: Array.isArray(parsed.tags)
+      ? parsed.tags.map((t) => String(t).slice(0, 32)).slice(0, 8)
+      : [],
     location,
     category,
     tone,

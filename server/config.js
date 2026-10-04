@@ -73,7 +73,7 @@ export const config = {
   openrouter: {
     apiKey: str('OPENROUTER_API_KEY'),
     baseUrl: str('OPENROUTER_BASE_URL', 'https://openrouter.ai/api/v1'),
-    model: str('OPENROUTER_MODEL', 'google/gemini-2.0-flash-001'),
+    model: str('OPENROUTER_MODEL', 'liquid/lfm-2.5-2.6b:free'),
     siteUrl: str('OPENROUTER_SITE_URL', defaultSiteUrl),
     siteName: str('OPENROUTER_SITE_NAME', 'CrimeScope'),
     temperature: num('STORY_MODEL_TEMPERATURE', 0.85),

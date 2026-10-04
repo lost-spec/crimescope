@@ -22,8 +22,23 @@ Then fill in two keys in `.env`:
 | `GNEWS_API_KEY` | https://gnews.io/register (free tier available) |
 | `OPENROUTER_API_KEY` | https://openrouter.ai/keys |
 
-`OPENROUTER_MODEL` defaults to `google/gemini-2.0-flash-001` — any chat model on
-OpenRouter works. Point it at a cheap model to keep costs down.
+`OPENROUTER_MODEL` defaults to `liquid/lfm-2.5-2.6b:free`, which costs nothing.
+Any chat model on OpenRouter works — point it at something larger if the prose
+quality is not there.
+
+## Story generation is defensive
+
+Small models are unreliable at strict structured output, so
+`server/services/stories.js` handles three failure shapes:
+
+1. **Valid JSON** — used as-is.
+2. **JSON in a markdown fence** — fences and stray prose are stripped before parsing.
+3. **Prose with no JSON at all** — `salvage` keeps the markdown as the body and
+   synthesises a headline from the location, rather than throwing the work away.
+
+If the first reply is unusable it retries once at a lower temperature with an
+explicit "return only JSON" instruction. If that also fails, the error names the
+model so it is obvious which one to change.
 
 Run it:
 
