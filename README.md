@@ -44,6 +44,34 @@ This matters because the default model does not advertise `response_format` or
 `structured_outputs` support, so the JSON contract has to be enforced by prompting
 and cleaned up afterwards rather than by the API.
 
+## Reasoning models
+
+Reasoning models leak their chain of thought, and Nemotron does it both ways —
+inline behind `<think>` tags, and as a separate `reasoning` field. Both used to
+break the forge:
+
+- **"Nothing."** Reasoning tokens come out of the same `max_tokens` budget as the
+  answer. The old budget (2200 for a 900–1200 word feature) left no margin, so
+  the model spent it thinking and came back with `finish_reason: "length"` and
+  empty content. The budget is now sized for the story with headroom —
+  3000/4500/7000 by length — and `reasoning: { enabled: false, exclude: true }`
+  stops it thinking in the first place. `exclude` alone would not have helped:
+  it hides the tokens but still bills them and still consumes the budget.
+- **"My thought process."** When the thinking arrived inline, the prose-salvage
+  path treated it as the narrative and published *"Let me think about this step
+  by step..."* as the story. Salvage now refuses text that reads like
+  deliberation, because publishing a model's internal reasoning as a reported
+  crime feature is worse than returning an error.
+- **A brace in the thinking.** Thinking often mentions the schema
+  (`{"title": ..., "body_markdown": ...}`), which used to send the parser to the
+  wrong brace and fail the whole story. Extraction now scans for balanced
+  objects and prefers the one that actually carries `body_markdown`, so a stray
+  fragment in the preamble can no longer shadow the real story.
+
+`diagnose` inspects `finish_reason` and `usage.completion_tokens_details.reasoning_tokens`
+so the error names the real cause — *"It spent 2190 of 2200 tokens reasoning and
+left 10 for the story"* — rather than guessing that the model is too weak.
+
 Run it:
 
 ```bash

@@ -50,50 +50,143 @@ Return ONLY a JSON object with this exact shape:
 }`;
 }
 
-function extractJson(text) {
-  const cleaned = String(text || '')
+/*
+ * Reasoning models (Nemotron, DeepSeek, the Qwen thinking variants) leak their
+ * chain of thought in two ways: as a separate `reasoning` field, and inlined in
+ * `content` behind <think> tags or as a plain preamble. The inline form is the
+ * dangerous one, because the thinking often contains braces and used to hijack
+ * the JSON parse, and because the prose-salvage path would happily publish the
+ * reasoning as the story.
+ */
+
+const REASONING_BLOCK = /<think>[\s\S]*?<\/think>/gi;
+const REASONING_FENCE = /<(?:thinking|reasoning)>[\s\S]*?<\/(?:thinking|reasoning)>/gi;
+
+function stripReasoning(text) {
+  let out = String(text || '');
+  out = out.replace(REASONING_BLOCK, '\n').replace(REASONING_FENCE, '\n');
+
+  // An unterminated block means the budget ran out mid-thought; nothing after
+  // the opening tag is a real answer.
+  const open = out.search(/<(?:think|thinking|reasoning)>/i);
+  if (open !== -1) out = out.slice(0, open);
+
+  return out.replace(/\s{3,}/g, '\n\n').trim();
+}
+
+/**
+ * Every top-level balanced `{...}` in the text, in order.
+ *
+ * Scanning for a balanced object rather than slicing from the first `{` to the
+ * last `}` is what makes a brace-laden preamble harmless: a stray `{"title":
+ * ...}` inside the thinking is simply one candidate that fails to parse, and
+ * the real object later in the string still gets found.
+ */
+function candidateObjects(text) {
+  const found = [];
+  for (let i = 0; i < text.length; i += 1) {
+    if (text[i] !== '{') continue;
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+
+    for (let j = i; j < text.length; j += 1) {
+      const ch = text[j];
+      if (escaped) {
+        escaped = false;
+        continue;
+      }
+      if (ch === '\\') {
+        escaped = true;
+        continue;
+      }
+      if (ch === '"') {
+        inString = !inString;
+        continue;
+      }
+      if (inString) continue;
+      if (ch === '{') depth += 1;
+      else if (ch === '}') {
+        depth -= 1;
+        if (depth === 0) {
+          found.push(text.slice(i, j + 1));
+          i = j;
+          break;
+        }
+      }
+    }
+  }
+  return found;
+}
+
+function unfence(text) {
+  return String(text || '')
     .trim()
     .replace(/^```(?:json)?\s*/i, '')
     .replace(/```$/i, '')
     .trim();
-
-  try {
-    return JSON.parse(cleaned);
-  } catch {
-    const start = cleaned.indexOf('{');
-    const end = cleaned.lastIndexOf('}');
-    if (start !== -1 && end > start) {
-      try {
-        return JSON.parse(cleaned.slice(start, end + 1));
-      } catch {
-        throw new HttpError(502, 'The model returned a story we could not parse');
-      }
-    }
-    throw new HttpError(502, 'The model returned an empty story');
-  }
 }
 
-function parseOrNull(text) {
-  try {
-    return extractJson(text);
-  } catch {
-    return null;
+function parseStory(raw) {
+  const text = stripReasoning(raw);
+  if (!text) return null;
+
+  const attempts = [unfence(text), ...candidateObjects(text)];
+  const parsed = [];
+
+  for (const attempt of attempts) {
+    if (!attempt) continue;
+    try {
+      const value = JSON.parse(attempt);
+      if (value && typeof value === 'object' && !Array.isArray(value)) parsed.push(value);
+    } catch {
+      /* try the next candidate */
+    }
   }
+
+  /*
+   * A fragment such as `{"title": "x"}` inside the model's preamble parses
+   * cleanly, so returning the first success would hand back a stub instead of
+   * the story. Prefer a candidate that actually carries the narrative.
+   */
+  return parsed.find((value) => value.body_markdown) || parsed[0] || null;
+}
+
+function parseOrNull(raw) {
+  return parseStory(raw);
+}
+
+/*
+ * Guards the prose-salvage path. Publishing a model's internal reasoning as a
+ * crime feature is worse than returning an error, so anything that reads like
+ * deliberation is rejected. Two markers are required so that ordinary reported
+ * prose is not caught by a single stray phrase.
+ */
+const REASONING_MARKERS = [
+  /\blet me\b/i,
+  /\bstep[- ]by[- ]step\b/i,
+  /\bthe (?:user|prompt|instructions?)\b[^.\n]{0,40}\b(?:wants?|asks?|requires?|says?)\b/i,
+  /^\s*(?:thinking|thoughts?|reasoning)\s*[:\-]/im,
+  /\b(?:first|then|finally),?\s+i\b/i,
+  /\bi\b[^.\n]{0,40}\b(?:need to|should|must)\b[^.\n]{0,30}\b(?:draft|think|consider|parse|verify|construct|write out)\b/i,
+];
+
+function looksLikeReasoning(text) {
+  const sample = String(text || '').slice(0, 2000);
+  if (!sample) return false;
+  return REASONING_MARKERS.filter((marker) => marker.test(sample)).length >= 2;
 }
 
 function salvage(raw, articles, wanted) {
-  const text = String(raw || '').trim();
-  if (!text) return { ok: false };
+  const text = stripReasoning(raw);
+  if (!text) return { ok: false, reason: 'empty' };
 
-  try {
-    const parsed = extractJson(text);
-    if (parsed && parsed.body_markdown) return { ok: true, value: parsed };
-  } catch {
-    /* not JSON, fall through to prose salvage */
-  }
+  const parsed = parseStory(text);
+  if (parsed && parsed.body_markdown) return { ok: true, value: parsed };
 
   const looksLikeProse = text.length > 250 && !text.startsWith('{');
-  if (!looksLikeProse) return { ok: false };
+  if (!looksLikeProse) return { ok: false, reason: 'unparseable' };
+  if (looksLikeReasoning(text)) return { ok: false, reason: 'reasoning' };
 
   const lines = text.split('\n').map((line) => line.trim()).filter(Boolean);
   const headingIndex = lines.findIndex((line) => /^#{1,3}\s/.test(line));
@@ -140,6 +233,64 @@ async function callModel(url, body) {
   });
 }
 
+/**
+ * `content` is the answer. Some reasoning models also return `reasoning` (or the
+ * `reasoning_content` alias) as a sibling field, which must never be read as the
+ * story. Some instead put their thinking inline in `content`, which
+ * `stripReasoning` deals with downstream.
+ */
+function readContent(response) {
+  const content = response?.choices?.[0]?.message?.content;
+  return typeof content === 'string' ? content : '';
+}
+
+/**
+ * Works out why a reply is unusable, so the error names the real cause instead
+ * of guessing. The important case is a reasoning model that spent the whole
+ * max_tokens budget thinking: visible tokens are then near zero, content is
+ * empty, and finish_reason is "length".
+ */
+function diagnose(response, raw) {
+  const choice = response?.choices?.[0] || {};
+  const reasoning =
+    choice.message?.reasoning || choice.message?.reasoning_content || '';
+  const completion = Number(response?.usage?.completion_tokens) || 0;
+  const reasoningTokens =
+    Number(response?.usage?.completion_tokens_details?.reasoning_tokens) || 0;
+  const visible = completion ? completion - reasoningTokens : 0;
+  const truncated = choice.finish_reason === 'length';
+
+  const detail = {
+    finishReason: choice.finish_reason || null,
+    completionTokens: completion || null,
+    reasoningTokens: reasoningTokens || null,
+    visibleTokens: completion ? visible : null,
+    reasoningChars: reasoning ? String(reasoning).length : 0,
+  };
+
+  if (!raw.trim() && reasoningTokens > 0 && visible < 64) {
+    return {
+      note:
+        `It spent ${reasoningTokens} of ${completion} tokens reasoning and left ` +
+        `${visible} for the story, so it returned nothing.`,
+      detail,
+    };
+  }
+  if (!raw.trim() && reasoning) {
+    return {
+      note: 'It returned only internal reasoning and no story.',
+      detail,
+    };
+  }
+  if (truncated) {
+    return {
+      note: `It hit the ${completion || 'max_tokens'} token ceiling before finishing (finish_reason: length).`,
+      detail,
+    };
+  }
+  return { note: '', detail };
+}
+
 export async function generateStory({
   location,
   category = 'all',
@@ -156,6 +307,14 @@ export async function generateStory({
   }
 
   const url = `${config.openrouter.baseUrl}/chat/completions`;
+
+  /*
+   * Reasoning is switched off rather than merely excluded. `exclude: true` only
+   * hides the tokens, they are still billed and still count against max_tokens,
+   * so a model that thinks anyway leaves no room for the story. `enabled: false`
+   * is the one that actually stops it; `exclude` is belt and braces for the
+   * providers that ignore the disable.
+   */
   const request = {
     model: config.openrouter.model,
     temperature: clamp(
@@ -163,7 +322,15 @@ export async function generateStory({
       0,
       1.5,
     ),
-    max_tokens: length === 'long' ? 3600 : 2200,
+    /*
+     * Reasoning tokens come out of the same budget as the answer, so this is
+     * sized for the story with headroom rather than for the story alone. The old
+     * 2200/3600 left a 900-1200 word feature almost no margin, and a model that
+     * spent the budget thinking returned an empty content with
+     * finish_reason "length".
+     */
+    max_tokens: { short: 3000, medium: 4500, long: 7000 }[length] || 4500,
+    reasoning: { enabled: false, exclude: true },
     messages: [
       { role: 'system', content: SYSTEM_PROMPT },
       {
@@ -180,40 +347,59 @@ export async function generateStory({
   };
 
   let response = await callModel(url, request);
-  let raw = response?.choices?.[0]?.message?.content;
+  let raw = readContent(response);
+  let trouble = diagnose(response, raw);
 
   const wanted = { length, tone, location };
-  const salvaged = salvage(raw, picked, wanted);
+  let salvaged = salvage(raw, picked, wanted);
 
   if (!salvaged.ok) {
+    console.warn(
+      `[story] first attempt unusable (${salvaged.reason || 'unknown'}${trouble.note ? `, ${trouble.note}` : ''}), retrying`,
+    );
     response = await callModel(url, {
       ...request,
       temperature: clamp(request.temperature - 0.3, 0, 1.5),
+      /*
+       * The failed reply is echoed back as context, so it must be the real
+       * answer. Echoing the model's reasoning back at it invites more of it.
+       */
       messages: [
         ...request.messages,
         {
           role: 'assistant',
-          content: String(raw || '').slice(0, 800),
+          content: stripReasoning(raw).slice(0, 800) || '(no usable output)',
         },
         {
           role: 'user',
           content:
             'That reply was not valid JSON. Reply with ONE JSON object and nothing else. ' +
-            'No markdown fences, no commentary. Keys: title (string), dek (string), ' +
-            'body_markdown (string, the full narrative in markdown), tags (array of strings).',
+            'No markdown fences, no commentary, no reasoning. Keys: title (string), ' +
+            'dek (string), body_markdown (string, the full narrative in markdown), ' +
+            'tags (array of strings).',
         },
       ],
     });
-    raw = response?.choices?.[0]?.message?.content;
+    raw = readContent(response);
+    trouble = diagnose(response, raw);
+    salvaged = salvage(raw, picked, wanted);
   }
 
   const parsed = salvaged.ok ? salvaged.value : parseOrNull(raw);
 
   if (!parsed || !parsed.title || !parsed.body_markdown) {
+    const SALVAGE_NOTES = {
+      reasoning: 'It spent the reply explaining its own reasoning instead of writing the story.',
+      empty: 'It returned an empty response.',
+      unparseable: 'It returned something that was neither JSON nor a narrative.',
+    };
+    const note = trouble.note || SALVAGE_NOTES[salvaged.reason] || '';
+
     throw new HttpError(
       502,
       `The model (${config.openrouter.model}) did not return a usable story. ` +
-        'Try a shorter length, or set OPENROUTER_MODEL to a stronger model.',
+        `${note ? `${note} ` : ''}Try a shorter length, or set OPENROUTER_MODEL to a stronger model.`,
+      trouble.detail,
     );
   }
 
