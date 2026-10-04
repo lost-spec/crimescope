@@ -22,9 +22,9 @@ Then fill in two keys in `.env`:
 | `GNEWS_API_KEY` | https://gnews.io/register (free tier available) |
 | `OPENROUTER_API_KEY` | https://openrouter.ai/keys |
 
-`OPENROUTER_MODEL` defaults to `liquid/lfm-2.5-2.6b:free`, which costs nothing.
-Any chat model on OpenRouter works — point it at something larger if the prose
-quality is not there.
+`OPENROUTER_MODEL` defaults to `nvidia/nemotron-3.5-lightning:free`, which costs
+nothing and has a 1M context window. Any chat model on OpenRouter works — point it at
+something larger if the prose quality is not there.
 
 ## Story generation is defensive
 
@@ -39,6 +39,10 @@ Small models are unreliable at strict structured output, so
 If the first reply is unusable it retries once at a lower temperature with an
 explicit "return only JSON" instruction. If that also fails, the error names the
 model so it is obvious which one to change.
+
+This matters because the default model does not advertise `response_format` or
+`structured_outputs` support, so the JSON contract has to be enforced by prompting
+and cleaned up afterwards rather than by the API.
 
 Run it:
 
