@@ -267,8 +267,10 @@ extra: el.extra.value.trim(),
         bad: false,
       });
     } else {
+      const notes = (data.notes || []).join(' ');
       setStatus(
-        `<span class="ok">${data.total} report${data.total === 1 ? '' : 's'}</span> near ${escapeHtml(place.name)} · tick the ones you want in the story`,
+        `<span class="ok">${data.total} report${data.total === 1 ? '' : 's'}</span> near ${escapeHtml(place.name)} · tick the ones you want in the story` +
+          (notes ? `<br /><span class="hint">${escapeHtml(notes)}</span>` : ''),
       );
     }
   } catch (error) {

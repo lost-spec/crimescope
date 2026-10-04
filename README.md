@@ -95,23 +95,43 @@ GNews has no geo radius, so `server/services/gnews.js` compiles a location into 
 query language instead:
 
 ```
-"crime" OR "shooting" OR "murder" OR "burglary" OR "robbery" OR "arrest" "Brooklyn, Kings County"
+("crime" OR "shooting" OR "murder" OR "burglary" OR "robbery" OR "arrest" OR "police" OR "court")
+  AND ("Brooklyn" OR "New York")
 ```
 
-The category supplies the crime terms, your keywords are added as phrases, and the
-resolved place name is quoted and appended. `server/services/geocode.js` normalises the
-place down to its first two comma segments so the match stays broad enough to return hits.
+The explicit `AND` matters: `OR` binds tighter than `AND` in GNews, so without the
+parentheses a location filter silently does nothing. Place variants come from splitting
+the geocoded name on commas and discarding administrative segments, so
+`Brooklyn, Kings County, New York` becomes `Brooklyn` and `New York`.
 
 Three GNews limits shape this, and breaking any of them returns **HTTP 400**:
 
 | Limit | Handling |
 | --- | --- |
-| `q` max 200 characters | `fitQuery` drops keywords, then multi-word terms, then hard-truncates |
+| `q` max 200 characters | `buildQueries` truncates |
 | `max` capped per plan (10 Free, 25 Essential) | `GNEWS_MAX_RESULTS`, default 10 to match the Free plan |
 | No `when:` operator in v4 | the time window becomes a `from` parameter in ISO format |
 
-The country is auto-detected from the geocoded place, so a London search queries the UK
-wire rather than the US one. `GNEWS_COUNTRY` is only the fallback.
+### The relaxation ladder
+
+A place name plus a list of crime terms is a narrow intersection, and for a small
+town it can legitimately match nothing. Rather than showing an empty page, the service
+tries progressively looser queries and stops at the first with results:
+
+1. crime terms `AND` place variants `AND` your keywords
+2. crime terms `AND` place variants
+3. `"Brooklyn" AND` crime terms
+4. crime terms alone — national results, no location filter
+
+The response carries `relaxed: true` and a `notes` array explaining what happened, and
+the UI says so under the result count. The final query is logged as `[gnews] N hits`.
+
+## Plan limits worth knowing
+
+The Free tier is 100 requests/day, 10 articles per request, a **12-hour delay** on new
+articles, and **30 days** of history. So a "last 24 hours" search on a free key only
+sees 12 hours of data, and `GNEWS_HISTORY_DAYS` caps longer windows instead of letting
+them return nothing. Paid plans unlock real-time data and history back to 2020.
 
 ## Generated stories are fiction
 

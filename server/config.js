@@ -67,6 +67,7 @@ export const config = {
     country: str('GNEWS_COUNTRY', 'US'),
     maxResults: num('GNEWS_MAX_RESULTS', 10),
     queryMaxChars: num('GNEWS_QUERY_MAX_CHARS', 200),
+    historyDays: num('GNEWS_HISTORY_DAYS', 30),
   },
 
   openrouter: {

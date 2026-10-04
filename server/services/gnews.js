@@ -30,45 +30,72 @@ export const CATEGORIES = {
 
 const WINDOW_DAYS = { '24h': 1, '7d': 7, '30d': 30, '90d': 90, any: null };
 
+const ADMIN = /\b(county|borough|district|province|region|prefecture|parish|municipality)\b/i;
+const LEADING = /^(city of|town of|state of|greater|metro|metropolitan)\s+/i;
+
 function isoAgo(days) {
   const date = new Date(Date.now() - days * 86400_000);
   return date.toISOString().slice(0, 19) + 'Z';
 }
 
-function shortPlace(locationName) {
-  return String(locationName)
-    .split(',')
-    .slice(0, 2)
-    .join(',')
-    .trim()
-    .replace(/"/g, '');
-}
-
 function clean(text) {
-  return String(text || '').replace(/["()]/g, '').replace(/\s+/g, ' ').trim();
+  return String(text || '')
+    .replace(/["()]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
-function fitQuery(terms, place, extra, limit) {
-  const quote = (list) => list.map((term) => `"${clean(term)}"`).join(' OR ');
-  const safePlace = clean(place);
-  const safeExtra = clean(extra);
+function placeVariants(locationName) {
+  const seen = new Set();
+  const parts = clean(locationName)
+    .split(',')
+    .map(clean)
+    .filter(Boolean);
 
-  const parts = [quote(terms)];
-  if (safePlace) parts.push(`"${safePlace}"`);
-  if (safeExtra) parts.push(`"${safeExtra}"`);
+  for (const part of parts.slice(0, 3)) {
+    if (ADMIN.test(part)) continue;
+    const stripped = part.replace(LEADING, '').replace(/\s+/g, ' ').trim();
+    const candidate = stripped.length >= 3 ? stripped : part;
+    if (candidate) seen.add(candidate);
+  }
 
-  const query = parts.join(' ');
-  if (query.length <= limit) return query;
+  return [...seen];
+}
 
-  const withoutExtra = [quote(terms), safePlace && `"${safePlace}"`]
-    .filter(Boolean)
-    .join(' ');
-  if (withoutExtra.length <= limit) return withoutExtra;
+function crimeGroup(terms) {
+  const bare = terms.filter((term) => !term.includes(' ')).map(clean);
+  const phrases = terms.filter((term) => term.includes(' ')).map(clean);
+  const all = [...phrases, ...bare].filter(Boolean);
+  return `(${all.map((term) => `"${term}"`).join(' OR ')})`;
+}
 
-  const bare = terms.map(clean).filter((term) => term.includes(' '));
-  const reduced = bare.length ? quote(bare) : quote(terms.slice(0, 3));
-  const trimmed = [reduced, safePlace && `"${safePlace}"`].filter(Boolean).join(' ');
-  return trimmed.length <= limit ? trimmed : reduced.slice(0, limit);
+function placeGroup(variants, limit) {
+  if (variants.length === 0) return '';
+  const single = variants.slice(0, 3).map((name) => `"${name}"`).join(' OR ');
+  const group = `(${single})`;
+  return group.length <= limit ? group : `"${variants[0]}"`;
+}
+
+function buildQueries(terms, variants, extra, limit) {
+  const crime = crimeGroup(terms);
+  const place = placeGroup(variants, limit);
+  const user = clean(extra) ? ` AND "${clean(extra)}"` : '';
+
+  const ladder = [];
+
+  if (place && user) ladder.push(`${crime} AND ${place}${user}`);
+  if (place) ladder.push(`${crime} AND ${place}`);
+  if (place) ladder.push(`"${variants[0]}" AND ${crime}`);
+  ladder.push(crime);
+
+  const seen = new Set();
+  return ladder
+    .map((query) => query.slice(0, limit))
+    .filter((query) => {
+      if (seen.has(query)) return false;
+      seen.add(query);
+      return true;
+    });
 }
 
 const HINTS = {
@@ -101,6 +128,31 @@ function mapArticle(article) {
   };
 }
 
+async function runQuery(query, { limit, windowKey, country }) {
+  const url = new URL(`${config.gnews.baseUrl}/search`);
+  url.searchParams.set('q', query);
+  url.searchParams.set('lang', config.gnews.lang);
+  if (country) url.searchParams.set('country', clean(country).toLowerCase());
+  url.searchParams.set('max', String(limit));
+  url.searchParams.set('apikey', config.gnews.apiKey);
+
+  const days = WINDOW_DAYS[windowKey];
+  if (days) {
+    const capped = Math.min(days, config.gnews.historyDays);
+    url.searchParams.set('from', isoAgo(capped));
+  }
+
+  const body = await fetchJson(url, {
+    headers: { Accept: 'application/json', 'X-Api-Key': config.gnews.apiKey },
+    service: 'GNews',
+  }).catch((error) => {
+    throw gnewsError(error);
+  });
+
+  const articles = Array.isArray(body?.articles) ? body.articles.map(mapArticle) : [];
+  return { articles, total: Number(body?.totalCount) || articles.length };
+}
+
 export async function searchCrimeNews({
   category = 'all',
   window: windowKey = '7d',
@@ -114,42 +166,51 @@ export async function searchCrimeNews({
   }
 
   const pack = CATEGORIES[category] || CATEGORIES.all;
-  const place = shortPlace(locationName);
-  const query = fitQuery(
-    pack.terms,
-    place,
-    extra,
-    config.gnews.queryMaxChars,
+  const variants = placeVariants(locationName);
+  const limit = clamp(max, 1, config.gnews.maxResults, config.gnews.maxResults);
+  const wire = (country || config.gnews.country).toLowerCase();
+
+  const ladder = buildQueries(pack.terms, variants, extra, config.gnews.queryMaxChars);
+
+  let used = null;
+  let relaxed = false;
+
+  for (const [index, query] of ladder.entries()) {
+    const result = await runQuery(query, { limit, windowKey, country: wire });
+    if (result.articles.length > 0) {
+      used = { query, ...result };
+      relaxed = index > 0;
+      break;
+    }
+    if (index === ladder.length - 1) used = { query, ...result };
+  }
+
+  console.log(
+    `[gnews] ${used.total} hits, ${used.articles.length} returned` +
+      `${relaxed ? ' (relaxed)' : ''} :: ${used.query}`,
   );
 
-  const limit = clamp(max, 1, config.gnews.maxResults, config.gnews.maxResults);
+  const locationMatched = used.query.includes('"');
   const days = WINDOW_DAYS[windowKey];
+  const notes = [];
 
-  const url = new URL(`${config.gnews.baseUrl}/search`);
-  url.searchParams.set('q', query);
-  url.searchParams.set('lang', config.gnews.lang);
-  if (config.gnews.country || country) {
-    url.searchParams.set('country', clean(country || config.gnews.country).toLowerCase());
+  if (relaxed && !locationMatched) {
+    notes.push('No location-specific reports for this filter, so these are national results.');
   }
-  url.searchParams.set('max', String(limit));
-  url.searchParams.set('apikey', config.gnews.apiKey);
-  if (days) url.searchParams.set('from', isoAgo(days));
-
-  const body = await fetchJson(url, {
-    headers: { Accept: 'application/json', 'X-Api-Key': config.gnews.apiKey },
-    service: 'GNews',
-  }).catch((error) => {
-    throw gnewsError(error);
-  });
-
-  const articles = Array.isArray(body?.articles) ? body.articles.map(mapArticle) : [];
+  if (days && days > config.gnews.historyDays) {
+    notes.push(
+      `GNews keeps ${config.gnews.historyDays} days of history on this plan, so the ${windowKey} window was capped.`,
+    );
+  }
 
   return {
-    query,
+    query: used.query,
+    relaxed,
+    notes,
     window: windowKey,
     max: limit,
-    total: Number(body?.totalCount) || articles.length,
+    total: used.total,
     fetchedAt: new Date().toISOString(),
-    articles,
+    articles: used.articles,
   };
 }
