@@ -35,6 +35,36 @@ npm run dev      # same, with --watch
 The header shows two status pips (`news`, `stories`). If a key is missing the pip
 stays dark and the forge panel tells you exactly what to add.
 
+## Deploy to Vercel
+
+```bash
+npm i -g vercel
+vercel --prod
+vercel env add GNEWS_API_KEY production
+vercel env add OPENROUTER_API_KEY production
+```
+
+Only those two keys are required. Everything else has a default:
+
+- `OPENROUTER_SITE_URL` auto-detects from `VERCEL_PROJECT_PRODUCTION_URL` (then
+  `VERCEL_URL`), so the `Referer` OpenRouter sees matches your deployed origin.
+- `VERCEL=1` is injected by the platform, which is how `server/index.js` knows to
+  export a handler rather than bind a port.
+- `PORT` and `HOST` are ignored on Vercel — do not set them.
+
+Optional overrides live in `.env.production.example`.
+
+### One caveat: the story shelf
+
+The Vercel filesystem is read-only apart from `/tmp`, so `server/store/stories.js`
+probes the directory and falls back to an in-memory shelf with a warning in the
+logs. Search and story generation both work, but **generated stories will not
+survive a cold start or scale-out**. The story still returns to the browser and
+reads fine immediately.
+
+For a durable shelf, point `STORY_DATA_DIR` at a mounted writable path or replace
+the store with a real database.
+
 ## Using it
 
 1. Type a city, neighbourhood, postcode or address — or hit **Use my location**

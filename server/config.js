@@ -49,6 +49,13 @@ const num = (key, fallback) => {
 
 const str = (key, fallback = '') => raw(key) ?? fallback;
 
+const vercelHost =
+  raw('VERCEL_PROJECT_PRODUCTION_URL') || raw('VERCEL_URL') || '';
+
+const defaultSiteUrl = vercelHost
+  ? `https://${vercelHost}`
+  : 'http://localhost:3000';
+
 export const config = {
   port: num('PORT', 3000),
   host: str('HOST', '127.0.0.1'),
@@ -64,7 +71,7 @@ export const config = {
     apiKey: str('OPENROUTER_API_KEY'),
     baseUrl: str('OPENROUTER_BASE_URL', 'https://openrouter.ai/api/v1'),
     model: str('OPENROUTER_MODEL', 'google/gemini-2.0-flash-001'),
-    siteUrl: str('OPENROUTER_SITE_URL', 'http://localhost:3000'),
+    siteUrl: str('OPENROUTER_SITE_URL', defaultSiteUrl),
     siteName: str('OPENROUTER_SITE_NAME', 'CrimeScope'),
     temperature: num('STORY_MODEL_TEMPERATURE', 0.85),
     maxSources: num('STORY_MAX_SOURCES', 8),
