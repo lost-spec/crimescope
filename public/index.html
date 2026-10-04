@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>CrimeScope — Crime near you</title>
+<meta name="description" content="Search crime news for your neighbourhood and read long-form crime stories written from those reports." />
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M16 2c5 8 9 12 9 17a9 9 0 0 1-18 0c0-5 4-9 9-17z' fill='%23dc143c'/%3E%3C/svg%3E" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@600;700;900&family=EB+Garamond:ital,wght@0,400;0,500;0,600;1,400&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+<div class="grain" aria-hidden="true"></div>
+<div class="vignette" aria-hidden="true"></div>
+<div class="mist" aria-hidden="true"></div>
+
+<header class="masthead">
+  <a class="brand" href="#" aria-label="CrimeScope home">
+    <span class="brand-mark" aria-hidden="true">
+      <svg viewBox="0 0 40 46" width="30" height="34">
+        <path d="M20 1c7 11 13 16 13 24a13 13 0 0 1-26 0C7 17 13 12 20 1z" fill="#dc143c" />
+        <path d="M20 7c4.5 7 8 10.5 8 15a8 8 0 0 1-16 0c0-4.5 3.5-8 8-15z" fill="#ff4d68" opacity=".55" />
+      </svg>
+    </span>
+    <span class="brand-text">
+      <strong>CRIMESCOPE</strong>
+      <em>crime &middot; proximity &middot; record</em>
+    </span>
+  </a>
+  <nav class="masthead-nav">
+    <button type="button" class="nav-link" data-scroll="search-panel">Search</button>
+    <button type="button" class="nav-link" data-scroll="forge">Story forge</button>
+    <button type="button" class="nav-link" data-scroll="shelf">Shelf</button>
+  </nav>
+  <div class="provider-pips" id="providerPips" aria-live="polite">
+    <span class="pip" data-pip="gnews">news</span>
+    <span class="pip" data-pip="openrouter">stories</span>
+  </div>
+</header>
+
+<main>
+  <section class="hero">
+    <p class="eyebrow">Live crime wire</p>
+    <h1>Know what happens<br /><span>on your streets.</span></h1>
+    <p class="lede">
+      Drop in a neighbourhood, pull the crime reports filed around it, and have the
+      desk turn those reports into a long-form story you can actually sit down and read.
+    </p>
+    <div class="drip-rule" aria-hidden="true">
+      <span></span><span></span><span></span><span></span><span></span>
+    </div>
+  </section>
+
+  <section class="panel search-panel" id="search-panel">
+    <form id="searchForm" novalidate>
+      <div class="field-row">
+        <div class="field grow">
+          <label for="locationInput">Where</label>
+          <div class="input-wrap">
+            <svg class="input-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2a7 7 0 0 0-7 7c0 5.2 7 13 7 13s7-7.8 7-13a7 7 0 0 0-7-7zm0 9.5A2.5 2.5 0 1 1 12 6a2.5 2.5 0 0 1 0 5.5z"/></svg>
+            <input id="locationInput" name="location" type="text" autocomplete="off"
+                   placeholder="City, neighbourhood, postcode, or address" required />
+          </div>
+          <p class="hint" id="locationHint">Type a place, or use your position.</p>
+        </div>
+        <button type="button" class="btn btn-ghost locate-btn" id="locateBtn">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8zm8.9 4c0-.6-.06-1.2-.17-1.77l2.1-1.64-2-3.46-2.5 1a7.9 7.9 0 0 0-3.06-1.77L14.9 1H9.1l-.37 3.36A7.9 7.9 0 0 0 5.67 6.13l-2.5-1-2 3.46 2.1 1.64A8.3 8.3 0 0 0 3.1 12c0 .6.06 1.2.17 1.77l-2.1 1.64 2 3.46 2.5-1a7.9 7.9 0 0 0 3.06 1.77l.37 3.36h5.8l.37-3.36a7.9 7.9 0 0 0 3.06-1.77l2.5 1 2-3.46-2.1-1.64c.11-.57.17-1.17.17-1.77z"/></svg>
+          <span>Use my location</span>
+        </button>
+        <button type="submit" class="btn btn-primary" id="searchBtn">
+          <span class="btn-label">Search the wire</span>
+          <span class="spinner" aria-hidden="true"></span>
+        </button>
+      </div>
+
+      <div class="filters">
+        <div class="chips" id="categoryChips" role="group" aria-label="Crime category"></div>
+
+        <div class="field-row compact">
+          <div class="field">
+            <label for="windowSelect">Time window</label>
+            <select id="windowSelect" name="window">
+              <option value="24h">Last 24 hours</option>
+              <option value="7d" selected>Last 7 days</option>
+              <option value="30d">Last 30 days</option>
+              <option value="90d">Last 90 days</option>
+              <option value="any">Any time</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="extraInput">Add keywords <span class="optional">optional</span></label>
+            <input id="extraInput" name="extra" type="text" placeholder="e.g. gang, juvenile, festival" />
+          </div>
+          <div class="field">
+            <label for="countrySelect">Country wire</label>
+            <select id="countrySelect" name="country">
+              <option value="US">United States</option>
+              <option value="GB">United Kingdom</option>
+              <option value="CA">Canada</option>
+              <option value="AU">Australia</option>
+              <option value="IN">India</option>
+              <option value="ZA">South Africa</option>
+              <option value="BR">Brazil</option>
+              <option value="IE">Ireland</option>
+              <option value="NZ">New Zealand</option>
+            </select>
+          </div>
+        </div>
+      </div>
+    </form>
+
+    <div class="status-line" id="searchStatus" aria-live="polite"></div>
+  </section>
+
+  <section class="section" id="reports" hidden>
+    <div class="section-head">
+      <h2>The wire</h2>
+      <div class="section-tools">
+        <span class="count" id="resultCount"></span>
+        <button type="button" class="btn btn-ghost small" id="selectAllBtn">Select all for story</button>
+      </div>
+    </div>
+    <div class="cards" id="resultGrid"></div>
+  </section>
+
+  <section class="panel forge" id="forge">
+    <div class="forge-head">
+      <div>
+        <p class="eyebrow">OpenRouter desk</p>
+        <h2>Story forge</h2>
+        <p class="forge-lede">
+          Pick the reports that matter. The desk writes a narrative feature from them —
+          clearly marked as fiction, anchored to what the filings actually say.
+        </p>
+      </div>
+      <div class="forge-tally">
+        <span class="tally-num" id="selectedCount">0</span>
+        <span class="tally-label">reports selected</span>
+      </div>
+    </div>
+
+    <div class="field-row compact forge-controls">
+      <div class="field">
+        <label for="toneSelect">Tone</label>
+        <select id="toneSelect"></select>
+      </div>
+      <div class="field">
+        <label for="lengthSelect">Length</label>
+        <select id="lengthSelect">
+          <option value="short">Short — ~600 words</option>
+          <option value="medium" selected>Medium — ~1000 words</option>
+          <option value="long">Long — ~1800 words</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="headlineInput">Working title <span class="optional">optional</span></label>
+        <input id="headlineInput" type="text" placeholder="Left to the desk" />
+      </div>
+      <button type="button" class="btn btn-primary forge-btn" id="generateBtn">
+        <span class="btn-label">Write the story</span>
+        <span class="spinner" aria-hidden="true"></span>
+      </button>
+    </div>
+    <p class="forge-note" id="forgeNote"></p>
+  </section>
+
+  <section class="section" id="shelf-section">
+    <div class="section-head">
+      <h2>The shelf</h2>
+      <span class="count" id="shelfCount"></span>
+    </div>
+    <div class="shelf" id="shelf"></div>
+  </section>
+</main>
+
+<footer class="foot">
+  <p class="foot-mark">CRIMESCOPE</p>
+  <p>
+    Reports are fetched live from GNews. Stories are fiction generated from those reports by a
+    model on OpenRouter and are clearly marked as such. Nothing here is an official police
+    record &mdash; always confirm locally.
+  </p>
+</footer>
+
+<div class="reader" id="reader" hidden>
+  <div class="reader-scrim" data-close-reader></div>
+  <article class="reader-panel" role="dialog" aria-modal="true" aria-labelledby="readerTitle">
+    <button type="button" class="reader-close" data-close-reader aria-label="Close story">&times;</button>
+    <div class="reader-scroll" id="readerBody"></div>
+  </article>
+</div>
+
+<div class="toasts" id="toasts" aria-live="polite"></div>
+
+<script src="app.js" type="module"></script>
+</body>
+</html>
