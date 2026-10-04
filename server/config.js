@@ -82,7 +82,7 @@ export const config = {
     ),
   },
 
-  dataDir: path.join(ROOT_DIR, 'data', 'stories'),
+  dataDir: str('STORY_DATA_DIR') || path.join(ROOT_DIR, 'data', 'stories'),
 };
 
 export function missingKeys() {
