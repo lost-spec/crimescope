@@ -238,7 +238,9 @@ async function runSearch() {
   try {
     const place = await resolveLocation(raw);
     state.location = place.name;
-    state.country = el.country.value;
+    const chosen = el.country.value;
+    state.country = chosen || place.countryCode || 'US';
+    if (chosen !== state.country) el.country.value = state.country;
 
     setStatus(`Pulling reports around <strong>${escapeHtml(place.name)}</strong>…`);
     const data = await api('/news', {
@@ -247,9 +249,8 @@ async function runSearch() {
         category: state.category,
         window: state.window,
         locationName: place.name,
-        extra: el.extra.value.trim(),
+extra: el.extra.value.trim(),
         country: state.country,
-        max: 18,
       },
     });
 

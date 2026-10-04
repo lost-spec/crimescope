@@ -65,6 +65,8 @@ export const config = {
     baseUrl: str('GNEWS_BASE_URL', 'https://gnews.io/api/v4'),
     lang: str('GNEWS_LANG', 'en'),
     country: str('GNEWS_COUNTRY', 'US'),
+    maxResults: num('GNEWS_MAX_RESULTS', 10),
+    queryMaxChars: num('GNEWS_QUERY_MAX_CHARS', 200),
   },
 
   openrouter: {

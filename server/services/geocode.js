@@ -46,6 +46,7 @@ export async function geocode(query) {
   url.searchParams.set('addressdetails', '1');
 
   const rows = await fetchJson(url, {
+    service: 'Geocoder',
     headers: { 'User-Agent': config.geocoder.userAgent, Accept: 'application/json' },
   });
 
@@ -75,6 +76,7 @@ export async function reverseGeocode(lat, lon) {
   url.searchParams.set('zoom', '12');
 
   const entry = await fetchJson(url, {
+    service: 'Geocoder',
     headers: { 'User-Agent': config.geocoder.userAgent, Accept: 'application/json' },
   });
 

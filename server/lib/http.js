@@ -7,7 +7,10 @@ export class HttpError extends Error {
   }
 }
 
-export async function fetchJson(url, { timeout = 15000, headers = {}, ...init } = {}) {
+export async function fetchJson(
+  url,
+  { timeout = 15000, headers = {}, service = 'Upstream', ...init } = {},
+) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeout);
   let response;
@@ -15,9 +18,9 @@ export async function fetchJson(url, { timeout = 15000, headers = {}, ...init } 
     response = await fetch(url, { ...init, headers, signal: controller.signal });
   } catch (error) {
     if (error.name === 'AbortError') {
-      throw new HttpError(504, 'Upstream request timed out');
+      throw new HttpError(504, `${service} request timed out`);
     }
-    throw new HttpError(502, `Upstream request failed: ${error.message}`);
+    throw new HttpError(502, `${service} request failed: ${error.message}`);
   } finally {
     clearTimeout(timer);
   }
@@ -41,8 +44,8 @@ export async function fetchJson(url, { timeout = 15000, headers = {}, ...init } 
       `HTTP ${response.status}`;
     throw new HttpError(
       response.status === 429 ? 429 : 502,
-      `Upstream error: ${upstreamMessage}`,
-      { status: response.status, body },
+      `${service} error: ${upstreamMessage}`,
+      { service, upstreamStatus: response.status, body },
     );
   }
 

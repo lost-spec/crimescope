@@ -95,13 +95,23 @@ GNews has no geo radius, so `server/services/gnews.js` compiles a location into 
 query language instead:
 
 ```
-( shooting OR murder OR stabbing OR ... ) when:7d "Brooklyn, Kings County"
+"crime" OR "shooting" OR "murder" OR "burglary" OR "robbery" OR "arrest" "Brooklyn, Kings County"
 ```
 
-The category supplies the crime terms, the window supplies `when:`, your keywords are
-ANDed in, and the resolved place name is quoted and appended. `server/services/geocode.js`
-normalises the place down to its first two comma segments so the match stays broad
-enough to return hits.
+The category supplies the crime terms, your keywords are added as phrases, and the
+resolved place name is quoted and appended. `server/services/geocode.js` normalises the
+place down to its first two comma segments so the match stays broad enough to return hits.
+
+Three GNews limits shape this, and breaking any of them returns **HTTP 400**:
+
+| Limit | Handling |
+| --- | --- |
+| `q` max 200 characters | `fitQuery` drops keywords, then multi-word terms, then hard-truncates |
+| `max` capped per plan (10 Free, 25 Essential) | `GNEWS_MAX_RESULTS`, default 10 to match the Free plan |
+| No `when:` operator in v4 | the time window becomes a `from` parameter in ISO format |
+
+The country is auto-detected from the geocoded place, so a London search queries the UK
+wire rather than the US one. `GNEWS_COUNTRY` is only the fallback.
 
 ## Generated stories are fiction
 

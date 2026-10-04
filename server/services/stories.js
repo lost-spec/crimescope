@@ -113,6 +113,7 @@ export async function generateStory({
   const response = await fetchJson(url, {
     method: 'POST',
     timeout: 120000,
+    service: 'OpenRouter',
     headers: {
       Authorization: `Bearer ${config.openrouter.apiKey}`,
       'Content-Type': 'application/json',
