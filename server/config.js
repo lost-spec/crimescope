@@ -68,6 +68,14 @@ export const config = {
     maxResults: num('GNEWS_MAX_RESULTS', 10),
     queryMaxChars: num('GNEWS_QUERY_MAX_CHARS', 200),
     historyDays: num('GNEWS_HISTORY_DAYS', 30),
+
+    /*
+     * GNews allows 1 request/second on the free plan and 10/second on paid
+     * plans. The fallback ladder needs several calls for one search, so calls
+     * are spaced by this gap rather than fired back to back.
+     */
+    minIntervalMs: num('GNEWS_MIN_INTERVAL_MS', 1100),
+    cacheTtlMs: num('GNEWS_CACHE_TTL_MS', 300_000),
   },
 
   openrouter: {

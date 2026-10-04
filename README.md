@@ -126,6 +126,31 @@ rather than silently searching everywhere.
 The `/api/news` response also reports `country` and which `endpoint` was used, so a
 headlines-routed search is visible rather than mysterious.
 
+## Not tripping GNews's rate limit
+
+GNews allows **1 request/second** on the free plan and 10/second on paid. One
+search here can need several calls — the fallback ladder walks rungs until one
+returns articles — and firing those back to back returns `429` for the whole
+search even though every individual query was valid. Three things prevent it:
+
+- **A throttle.** `server/lib/throttle.js` holds one gate per process and keeps
+  at least `GNEWS_MIN_INTERVAL_MS` (default `1100`) between calls. Concurrent
+  searches queue instead of racing.
+- **A cache.** Responses are reused for `GNEWS_CACHE_TTL_MS` (default 5 minutes),
+  keyed on endpoint, query, country, window and limit. A repeat search costs zero
+  requests, and so does a failed ladder walk. `/api/news` reports `cached: true`
+  when this happened.
+- **Backoff.** A `429` is retried up to twice, after 1s and 2s, rather than
+  surfacing immediately. After that it is rethrown and the ladder stops — walking
+  more rungs while throttled cannot succeed.
+
+`429` is a speed limit and clears in seconds. `403` is the daily quota and resets
+at 00:00 UTC — that one needs a plan upgrade, not a code change.
+
+On a paid plan set `GNEWS_MIN_INTERVAL_MS=100` to use the full 10/second. The
+cache and gate are per-process, so on Vercel each warm instance keeps its own;
+sharing one limiter across instances would need external storage.
+
 ## API
 
 | Method | Route | Notes |

@@ -1,6 +1,38 @@
 import { config } from '../config.js';
 import { fetchJson, HttpError, clamp } from '../lib/http.js';
+import { createThrottle } from '../lib/throttle.js';
 import { isSupported, needsHeadlines } from './countries.js';
+
+/*
+ * One gate for every GNews call in this process, plus a short-lived response
+ * cache. Together these keep the fallback ladder inside the free plan's
+ * 1 request/second budget and make repeat searches free.
+ */
+const gate = createThrottle({ minIntervalMs: config.gnews.minIntervalMs });
+const RETRY_DELAYS_MS = [1000, 2000];
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const cache = new Map();
+
+function cacheKey(parts) {
+  return parts.join('|');
+}
+
+function readCache(key) {
+  const hit = cache.get(key);
+  if (!hit) return null;
+  if (hit.expiresAt <= Date.now()) {
+    cache.delete(key);
+    return null;
+  }
+  return hit;
+}
+
+function writeCache(key, value, ttlMs) {
+  if (ttlMs <= 0) return;
+  if (cache.size > 200) cache.delete(cache.keys().next().value);
+  cache.set(key, { value, fetchedAt: Date.now(), expiresAt: Date.now() + ttlMs });
+}
 
 export const CATEGORIES = {
   violent: {
@@ -132,6 +164,32 @@ function gnewsError(error) {
   );
 }
 
+/*
+ * Retries only a genuine upstream 429. Our own rate limiter also throws 429, but
+ * it carries `retryAfterSeconds` instead of `upstreamStatus`, so backing off and
+ * retrying that one would just hammer our own gate.
+ */
+async function fetchGnews(url) {
+  let attempt = 0;
+  for (;;) {
+    try {
+      return await fetchJson(url, {
+        headers: { Accept: 'application/json', 'X-Api-Key': config.gnews.apiKey },
+        service: 'GNews',
+      });
+    } catch (error) {
+      const throttled = error?.details?.upstreamStatus === 429;
+      if (!throttled || attempt >= RETRY_DELAYS_MS.length) {
+        throw gnewsError(error);
+      }
+      const delay = RETRY_DELAYS_MS[attempt];
+      attempt += 1;
+      console.warn(`[gnews] 429, retrying in ${delay}ms (attempt ${attempt})`);
+      await sleep(delay);
+    }
+  }
+}
+
 function mapArticle(article) {
   return {
     id: Buffer.from(`${article.url || article.title}`).toString('base64url').slice(0, 22),
@@ -145,12 +203,23 @@ function mapArticle(article) {
 }
 
 async function runQuery(query, { limit, windowKey, country, headlines }) {
+  const key = cacheKey([
+    headlines ? 'th' : 'se',
+    query,
+    country,
+    windowKey,
+    limit,
+  ]);
+
+  const hit = readCache(key);
+  if (hit) return { ...hit.value, cached: true, fetchedAt: hit.fetchedAt };
+
   const url = new URL(`${config.gnews.baseUrl}/${headlines ? 'top-headlines' : 'search'}`);
   url.searchParams.set('q', query);
 
   /*
    * `/search` keeps the configured language. `/top-headlines` does not: for the
-   * 35 countries outside the search list the local-language feed is nearly all
+   * 34 countries outside the search list the local-language feed is nearly all
    * there is, and pinning `lang=en` would empty the result set. Articles are
    * shown with their original titles either way.
    */
@@ -168,15 +237,12 @@ async function runQuery(query, { limit, windowKey, country, headlines }) {
     url.searchParams.set('from', isoAgo(capped));
   }
 
-  const body = await fetchJson(url, {
-    headers: { Accept: 'application/json', 'X-Api-Key': config.gnews.apiKey },
-    service: 'GNews',
-  }).catch((error) => {
-    throw gnewsError(error);
-  });
+  const body = await gate(() => fetchGnews(url));
 
   const articles = Array.isArray(body?.articles) ? body.articles.map(mapArticle) : [];
-  return { articles, total: Number(body?.totalCount) || articles.length };
+  const result = { articles, total: Number(body?.totalCount) || articles.length };
+  writeCache(key, result, config.gnews.cacheTtlMs);
+  return { ...result, cached: false, fetchedAt: Date.now() };
 }
 
 export async function searchCrimeNews({
@@ -221,9 +287,16 @@ export async function searchCrimeNews({
 
   let used = null;
   let relaxed = false;
+  let servedFromCache = false;
 
   for (const [index, query] of ladder.entries()) {
+    /*
+     * A throw here ends the search. That is deliberate for 429: walking the
+     * remaining rungs while GNews is throttling us only deepens the problem,
+     * and none of them can succeed until the limit clears.
+     */
     const result = await runQuery(query, { limit, windowKey, country: wire, headlines });
+    if (result.cached) servedFromCache = true;
     if (result.articles.length > 0) {
       used = { query, ...result };
       relaxed = index > 0;
@@ -234,7 +307,9 @@ export async function searchCrimeNews({
 
   console.log(
     `[gnews] ${used.total} hits, ${used.articles.length} returned` +
-      `${relaxed ? ' (relaxed)' : ''} :: ${headlines ? 'top-headlines' : 'search'}` +
+      `${relaxed ? ' (relaxed)' : ''}` +
+      `${servedFromCache ? ' (cache)' : ''}` +
+      ` :: ${headlines ? 'top-headlines' : 'search'}` +
       `${wire ? ` ${wire}` : ''} :: ${used.query}`,
   );
 
@@ -257,9 +332,10 @@ export async function searchCrimeNews({
     window: windowKey,
     country: wire ? wire.toUpperCase() : null,
     endpoint: headlines ? 'top-headlines' : 'search',
+    cached: servedFromCache,
     max: limit,
     total: used.total,
-    fetchedAt: new Date().toISOString(),
+    fetchedAt: new Date(used.fetchedAt || Date.now()).toISOString(),
     articles: used.articles,
   };
 }
