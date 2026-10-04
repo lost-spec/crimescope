@@ -1,5 +1,6 @@
 import { config } from '../config.js';
 import { fetchJson, HttpError, clamp } from '../lib/http.js';
+import { isSupported, needsHeadlines } from './countries.js';
 
 export const CATEGORIES = {
   violent: {
@@ -69,6 +70,17 @@ function crimeGroup(terms) {
   return `(${all.map((term) => `"${term}"`).join(' OR ')})`;
 }
 
+/** A deliberately narrow query, used as a last rung for the headlines route. */
+function shortCrimeGroup(terms, keep = 3) {
+  const picked = terms
+    .slice(0, keep)
+    .map(clean)
+    .filter(Boolean)
+    .map((term) => `"${term}"`);
+  if (picked.length === 0) return '';
+  return picked.length === 1 ? picked[0] : `(${picked.join(' OR ')})`;
+}
+
 function placeGroup(variants, limit) {
   if (variants.length === 0) return '';
   const single = variants.slice(0, 3).map((name) => `"${name}"`).join(' OR ');
@@ -76,7 +88,7 @@ function placeGroup(variants, limit) {
   return group.length <= limit ? group : `"${variants[0]}"`;
 }
 
-function buildQueries(terms, variants, extra, limit) {
+function buildQueries(terms, variants, extra, limit, { simple = false } = {}) {
   const crime = crimeGroup(terms);
   const place = placeGroup(variants, limit);
   const user = clean(extra) ? ` AND "${clean(extra)}"` : '';
@@ -87,6 +99,10 @@ function buildQueries(terms, variants, extra, limit) {
   if (place) ladder.push(`${crime} AND ${place}`);
   if (place) ladder.push(`"${variants[0]}" AND ${crime}`);
   ladder.push(crime);
+  if (simple) {
+    const short = shortCrimeGroup(terms);
+    if (short) ladder.push(place ? `${short} AND ${place}` : short);
+  }
 
   const seen = new Set();
   return ladder
@@ -128,11 +144,21 @@ function mapArticle(article) {
   };
 }
 
-async function runQuery(query, { limit, windowKey, country }) {
-  const url = new URL(`${config.gnews.baseUrl}/search`);
+async function runQuery(query, { limit, windowKey, country, headlines }) {
+  const url = new URL(`${config.gnews.baseUrl}/${headlines ? 'top-headlines' : 'search'}`);
   url.searchParams.set('q', query);
-  url.searchParams.set('lang', config.gnews.lang);
-  if (country) url.searchParams.set('country', clean(country).toLowerCase());
+
+  /*
+   * `/search` keeps the configured language. `/top-headlines` does not: for the
+   * 35 countries outside the search list the local-language feed is nearly all
+   * there is, and pinning `lang=en` would empty the result set. Articles are
+   * shown with their original titles either way.
+   */
+  if (!headlines && config.gnews.lang) {
+    url.searchParams.set('lang', config.gnews.lang);
+  }
+
+  if (country) url.searchParams.set('country', country);
   url.searchParams.set('max', String(limit));
   url.searchParams.set('apikey', config.gnews.apiKey);
 
@@ -168,15 +194,36 @@ export async function searchCrimeNews({
   const pack = CATEGORIES[category] || CATEGORIES.all;
   const variants = placeVariants(locationName);
   const limit = clamp(max, 1, config.gnews.maxResults, config.gnews.maxResults);
-  const wire = (country || config.gnews.country).toLowerCase();
 
-  const ladder = buildQueries(pack.terms, variants, extra, config.gnews.queryMaxChars);
+  const requested = clean(country).toLowerCase();
+  const notes = [];
+  let wire = '';
+
+  if (requested && !isSupported(requested)) {
+    notes.push(
+      `GNews does not index ${country.trim().toUpperCase()}, so this search was not country-filtered.`,
+    );
+  } else {
+    wire = requested || clean(config.gnews.country).toLowerCase();
+    if (wire && !isSupported(wire)) wire = '';
+  }
+
+  const headlines = needsHeadlines(wire);
+  if (headlines) {
+    notes.push(
+      'GNews serves this country through its top-headlines feed instead of full-text search, so expect fewer but more local reports.',
+    );
+  }
+
+  const ladder = buildQueries(pack.terms, variants, extra, config.gnews.queryMaxChars, {
+    simple: headlines,
+  });
 
   let used = null;
   let relaxed = false;
 
   for (const [index, query] of ladder.entries()) {
-    const result = await runQuery(query, { limit, windowKey, country: wire });
+    const result = await runQuery(query, { limit, windowKey, country: wire, headlines });
     if (result.articles.length > 0) {
       used = { query, ...result };
       relaxed = index > 0;
@@ -187,12 +234,12 @@ export async function searchCrimeNews({
 
   console.log(
     `[gnews] ${used.total} hits, ${used.articles.length} returned` +
-      `${relaxed ? ' (relaxed)' : ''} :: ${used.query}`,
+      `${relaxed ? ' (relaxed)' : ''} :: ${headlines ? 'top-headlines' : 'search'}` +
+      `${wire ? ` ${wire}` : ''} :: ${used.query}`,
   );
 
   const locationMatched = used.query.includes('"');
   const days = WINDOW_DAYS[windowKey];
-  const notes = [];
 
   if (relaxed && !locationMatched) {
     notes.push('No location-specific reports for this filter, so these are national results.');
@@ -208,6 +255,8 @@ export async function searchCrimeNews({
     relaxed,
     notes,
     window: windowKey,
+    country: wire ? wire.toUpperCase() : null,
+    endpoint: headlines ? 'top-headlines' : 'search',
     max: limit,
     total: used.total,
     fetchedAt: new Date().toISOString(),

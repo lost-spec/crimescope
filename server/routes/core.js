@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { config, missingKeys } from '../config.js';
 import { CATEGORIES } from '../services/gnews.js';
+import { COUNTRIES } from '../services/countries.js';
 import { geocode, reverseGeocode, distanceKm } from '../services/geocode.js';
 
 export const router = Router();
@@ -25,6 +26,7 @@ router.get('/categories', (_req, res) => {
       label: value.label,
     })),
     windows: ['24h', '7d', '30d', '90d', 'any'],
+    countries: COUNTRIES,
     tones: [
       'noir, restrained, street-level',
       'clinical, factual, procedural',

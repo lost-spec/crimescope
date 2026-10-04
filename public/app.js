@@ -11,6 +11,9 @@ const state = {
   shelves: [],
 };
 
+/** ISO codes GNews actually indexes, filled in from /api/categories. */
+let supportedCountries = new Set();
+
 const el = {
   form: $('#searchForm'),
   location: $('#locationInput'),
@@ -209,6 +212,17 @@ async function boot() {
       option.textContent = tone.replace(/,.*/, (m) => m).replace(/^./, (c) => c.toUpperCase());
       el.tone.append(option);
     });
+
+    if (Array.isArray(meta.countries) && meta.countries.length) {
+      supportedCountries = new Set(meta.countries.map((c) => c.code));
+      meta.countries.forEach(({ code, name }) => {
+        const option = document.createElement('option');
+        option.value = code;
+        option.textContent = name;
+        el.country.append(option);
+      });
+      state.country = el.country.value;
+    }
   } catch {
     /* meta is non-critical */
   }
@@ -239,8 +253,16 @@ async function runSearch() {
     const place = await resolveLocation(raw);
     state.location = place.name;
     const chosen = el.country.value;
-    state.country = chosen || place.countryCode || 'US';
+    const detected = String(place.countryCode || '').toUpperCase();
+    const usable = detected && supportedCountries.has(detected) ? detected : '';
+    state.country = chosen || usable;
     if (chosen !== state.country) el.country.value = state.country;
+    if (!chosen && detected && !usable) {
+      toast(
+        `GNews does not index ${detected}, so this search runs without a country filter. Pick a country from the list to narrow it.`,
+        { title: 'Country not covered', bad: false },
+      );
+    }
 
     setStatus(`Pulling reports around <strong>${escapeHtml(place.name)}</strong>…`);
     const data = await api('/news', {

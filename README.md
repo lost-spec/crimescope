@@ -89,17 +89,49 @@ the store with a real database.
 1. Type a city, neighbourhood, postcode or address — or hit **Use my location**
    to let the browser supply a GPS fix.
 2. Pick a category (violent, property, narcotics, juvenile, courts, everything),
-   a time window, an optional keyword, and the country wire.
+   a time window, an optional keyword, and a country.
 3. **Search the wire** loads matching reports.
 4. Tick the reports worth using, set tone and length, then hit **Write the story**.
 5. The story lands on the shelf and opens in the reader.
+
+## Countries: why there are two of them
+
+The picker offers all **71** countries GNews indexes, but GNews splits that across
+two endpoints with different country lists:
+
+| Endpoint | Countries | Used for |
+| --- | --- | --- |
+| `/search` | 37 | the 37 it accepts, Pakistan included |
+| `/top-headlines` | 71 | the other 34 (`ke`, `za`, `nz`, `gh`, `bw`, …) |
+
+The "71 countries" GNews advertises is the *top-headlines* list. Passing one of the
+extra 34 to `/search` gets the request rejected, so `server/services/countries.js`
+holds the registry and `searchCrimeNews` routes automatically:
+
+- **37 countries** go to `/search` as before, with `lang` pinned to `GNEWS_LANG`.
+- **34 countries** (`ke`, `za`, `nz`, `gh`, `bw`, …) go to `/top-headlines`, which
+  also accepts `q`, so the crime keywords still apply.
+- The top-headlines route **drops the `lang` pin**. Those countries are covered
+  almost entirely by local-language publishers, so forcing `en` would return
+  nothing. Titles are shown in their original language either way.
+- The top-headlines route gets one extra, narrower fallback query, because it
+  filters a ranked headline list rather than a full-text index and long boolean
+  queries come back empty more often there.
+
+A country GNews does not index at all (Nepal, for instance) is never sent to the
+wire — the filter is dropped and a note explains why, instead of returning a 400.
+Auto-detect checks the same list, so a GPS fix in an uncovered country says so
+rather than silently searching everywhere.
+
+The `/api/news` response also reports `country` and which `endpoint` was used, so a
+headlines-routed search is visible rather than mysterious.
 
 ## API
 
 | Method | Route | Notes |
 | --- | --- | --- |
 | `GET` | `/api/health` | provider key status and active model |
-| `GET` | `/api/categories` | categories, windows, tones, lengths |
+| `GET` | `/api/categories` | categories, windows, tones, lengths, countries |
 | `GET` | `/api/geocode?q=` | place name → `{ name, lat, lon, fullName }` |
 | `GET` | `/api/geocode/reverse?lat=&lon=` | coordinates → place name |
 | `GET`/`POST` | `/api/news` | `{ category, window, locationName, extra, country, max }` |
